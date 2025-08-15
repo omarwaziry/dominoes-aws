@@ -1,0 +1,1 @@
+# Load testing scripts for auto scaling validation

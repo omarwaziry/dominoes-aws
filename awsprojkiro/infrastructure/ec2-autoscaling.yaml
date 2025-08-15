@@ -1,0 +1,682 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EC2 Launch Template and Auto Scaling Group for scalable dominoes web application - Free Tier optimized'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'dominoes-app'
+    Description: 'Name of the project for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+  VPCId:
+    Type: String
+    Description: 'VPC ID where EC2 instances will be deployed'
+    
+  PrivateSubnet1Id:
+    Type: String
+    Description: 'Private Subnet 1 ID for EC2 instances'
+    
+  PrivateSubnet2Id:
+    Type: String
+    Description: 'Private Subnet 2 ID for EC2 instances'
+    
+  EC2SecurityGroupId:
+    Type: String
+    Description: 'Security Group ID for EC2 instances'
+
+  TargetGroupArn:
+    Type: String
+    Description: 'Target Group ARN for Auto Scaling Group'
+
+  InstanceType:
+    Type: String
+    Default: 't2.micro'
+    AllowedValues: ['t2.micro', 't3.micro', 't2.small', 't3.small']
+    Description: 'EC2 instance type (t2.micro for free tier)'
+
+  KeyPairName:
+    Type: String
+    Description: 'EC2 Key Pair name for SSH access (optional for debugging)'
+    Default: ''
+
+  MinSize:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: 'Minimum number of instances in Auto Scaling Group'
+
+  MaxSize:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 10
+    Description: 'Maximum number of instances in Auto Scaling Group (limited for free tier)'
+
+  DesiredCapacity:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: 'Desired number of instances in Auto Scaling Group'
+
+  ScaleUpCooldown:
+    Type: Number
+    Default: 300
+    Description: 'Cooldown period in seconds after scaling up'
+
+  ScaleDownCooldown:
+    Type: Number
+    Default: 300
+    Description: 'Cooldown period in seconds after scaling down'
+
+  CPUTargetValue:
+    Type: Number
+    Default: 70
+    MinValue: 10
+    MaxValue: 90
+    Description: 'Target CPU utilization percentage for scaling'
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+
+Mappings:
+  AWSRegionAMI:
+    us-east-1:
+      AMI: ami-0c02fb55956c7d316  # Amazon Linux 2023
+    us-west-2:
+      AMI: ami-008fe2fc65df48dac  # Amazon Linux 2023
+    eu-west-1:
+      AMI: ami-01dd271720c1ba44f  # Amazon Linux 2023
+    ap-southeast-1:
+      AMI: ami-0df7a207adb9748c7  # Amazon Linux 2023
+
+Resources:
+  # IAM Role for EC2 instances
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: DominoesAppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:ListMetrics
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - logs:DescribeLogGroups
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-app-bucket'
+                  - !Sub 'arn:aws:s3:::${ProjectName}-${Environment}-app-bucket/*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                  - autoscaling:DescribeAutoScalingGroups
+                  - autoscaling:DescribeAutoScalingInstances
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ec2-role'
+        - Key: Environment
+          Value: !Ref Environment
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-${Environment}-ec2-profile'
+      Roles:
+        - !Ref EC2Role
+
+  # Launch Template
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${ProjectName}-${Environment}-launch-template'
+      LaunchTemplateData:
+        ImageId: !FindInMap [AWSRegionAMI, !Ref 'AWS::Region', AMI]
+        InstanceType: !Ref InstanceType
+        KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref EC2SecurityGroupId
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp2
+              VolumeSize: 8  # 8GB for free tier
+              DeleteOnTermination: true
+              Encrypted: true
+        Monitoring:
+          Enabled: true
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            
+            # Log all output for debugging
+            exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+            echo "Starting user data script at $(date)"
+            
+            # Update system
+            yum update -y
+            
+            # Install required packages
+            yum install -y python3 python3-pip git amazon-cloudwatch-agent awscli
+            
+            # Create application user
+            useradd -m -s /bin/bash dominoes || echo "User dominoes already exists"
+            
+            # Create application directory
+            mkdir -p /opt/dominoes-app
+            chown dominoes:dominoes /opt/dominoes-app
+            
+            # Create application structure and files
+            cd /opt/dominoes-app
+            
+            # Create requirements.txt
+            cat > requirements.txt << 'EOF'
+            Flask==2.3.3
+            Werkzeug==2.3.7
+            gunicorn==21.2.0
+            SQLAlchemy==2.0.23
+            PyMySQL==1.1.0
+            boto3==1.34.0
+            cryptography==41.0.8
+            EOF
+            
+            # Install Python dependencies
+            pip3 install -r requirements.txt
+            
+            # Create basic application structure
+            mkdir -p app static templates
+            
+            # Create basic Flask application
+            cat > wsgi.py << 'EOF'
+            #!/usr/bin/env python3
+            import os
+            from flask import Flask, jsonify, render_template_string
+            from datetime import datetime
+            import logging
+            
+            app = Flask(__name__)
+            app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
+            
+            # Configure logging
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+            
+            @app.route('/health')
+            def health_check():
+                """Health check endpoint for ALB"""
+                return jsonify({
+                    'status': 'healthy',
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'version': '1.0.0',
+                    'instance_id': os.environ.get('EC2_INSTANCE_ID', 'unknown')
+                }), 200
+            
+            @app.route('/metrics')
+            def metrics():
+                """Metrics endpoint for monitoring"""
+                return jsonify({
+                    'application': {
+                        'status': 'running',
+                        'uptime': 'unknown'
+                    },
+                    'timestamp': datetime.utcnow().isoformat()
+                }), 200
+            
+            @app.route('/')
+            def index():
+                """Main application endpoint"""
+                html_template = '''
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Dominoes Game - AWS Scalable Web App</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }
+                        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                        h1 { color: #333; text-align: center; }
+                        .status { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                        .info { background: #e8f4fd; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                        .endpoint { margin: 10px 0; }
+                        .endpoint a { color: #0066cc; text-decoration: none; }
+                        .endpoint a:hover { text-decoration: underline; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>🎲 Dominoes Game - AWS Scalable Web Application</h1>
+                        
+                        <div class="status">
+                            <h3>✅ Application Status: Running</h3>
+                            <p><strong>Instance ID:</strong> {{ instance_id }}</p>
+                            <p><strong>Timestamp:</strong> {{ timestamp }}</p>
+                            <p><strong>Environment:</strong> {{ environment }}</p>
+                        </div>
+                        
+                        <div class="info">
+                            <h3>📊 Available Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Health Check:</strong> <a href="/health">/health</a> - ALB health monitoring
+                            </div>
+                            <div class="endpoint">
+                                <strong>Metrics:</strong> <a href="/metrics">/metrics</a> - Application metrics
+                            </div>
+                            <div class="endpoint">
+                                <strong>Home:</strong> <a href="/">/</a> - This page
+                            </div>
+                        </div>
+                        
+                        <div class="info">
+                            <h3>🏗️ Infrastructure Features</h3>
+                            <ul>
+                                <li>Auto Scaling Group with CPU-based scaling</li>
+                                <li>Application Load Balancer with health checks</li>
+                                <li>CloudWatch monitoring and alerting</li>
+                                <li>Free tier optimized (t2.micro instances)</li>
+                                <li>Multi-AZ deployment for high availability</li>
+                            </ul>
+                        </div>
+                        
+                        <div class="info">
+                            <p><em>This is a demonstration of AWS scalable web application architecture. 
+                            The full dominoes game functionality will be deployed in subsequent updates.</em></p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+                '''
+                
+                return render_template_string(html_template,
+                    instance_id=os.environ.get('EC2_INSTANCE_ID', 'unknown'),
+                    timestamp=datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
+                    environment=os.environ.get('FLASK_ENV', 'production')
+                )
+            
+            if __name__ == "__main__":
+                app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 80)))
+            EOF
+            
+            # Set ownership
+            chown -R dominoes:dominoes /opt/dominoes-app
+            
+            # Get instance metadata
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+            REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
+            
+            # Create environment file
+            cat > /opt/dominoes-app/.env << EOF
+            FLASK_ENV=production
+            SECRET_KEY=$(openssl rand -base64 32)
+            EC2_INSTANCE_ID=$INSTANCE_ID
+            AWS_REGION=$REGION
+            PORT=80
+            EOF
+            
+            chown dominoes:dominoes /opt/dominoes-app/.env
+            
+            # Create systemd service
+            cat > /etc/systemd/system/dominoes-app.service << 'EOF'
+            [Unit]
+            Description=Dominoes Web Application
+            After=network.target
+            
+            [Service]
+            Type=exec
+            User=dominoes
+            Group=dominoes
+            WorkingDirectory=/opt/dominoes-app
+            EnvironmentFile=/opt/dominoes-app/.env
+            ExecStart=/usr/bin/python3 -m gunicorn --bind 0.0.0.0:80 --workers 2 --timeout 60 --access-logfile /var/log/dominoes-app-access.log --error-logfile /var/log/dominoes-app-error.log wsgi:app
+            ExecReload=/bin/kill -s HUP $MAINPID
+            Restart=always
+            RestartSec=10
+            StandardOutput=journal
+            StandardError=journal
+            
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            
+            # Configure CloudWatch agent
+            mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
+            {
+              "metrics": {
+                "namespace": "DominoesApp/EC2",
+                "metrics_collected": {
+                  "cpu": {
+                    "measurement": [
+                      "cpu_usage_idle",
+                      "cpu_usage_iowait",
+                      "cpu_usage_user",
+                      "cpu_usage_system"
+                    ],
+                    "metrics_collection_interval": 60
+                  },
+                  "disk": {
+                    "measurement": [
+                      "used_percent"
+                    ],
+                    "metrics_collection_interval": 60,
+                    "resources": [
+                      "*"
+                    ]
+                  },
+                  "diskio": {
+                    "measurement": [
+                      "io_time",
+                      "read_bytes",
+                      "write_bytes"
+                    ],
+                    "metrics_collection_interval": 60,
+                    "resources": [
+                      "*"
+                    ]
+                  },
+                  "mem": {
+                    "measurement": [
+                      "mem_used_percent",
+                      "mem_available_percent"
+                    ],
+                    "metrics_collection_interval": 60
+                  },
+                  "netstat": {
+                    "measurement": [
+                      "tcp_established",
+                      "tcp_time_wait"
+                    ],
+                    "metrics_collection_interval": 60
+                  }
+                }
+              },
+              "logs": {
+                "logs_collected": {
+                  "files": {
+                    "collect_list": [
+                      {
+                        "file_path": "/var/log/dominoes-app-access.log",
+                        "log_group_name": "/aws/ec2/dominoes-app/access",
+                        "log_stream_name": "{instance_id}",
+                        "timezone": "UTC"
+                      },
+                      {
+                        "file_path": "/var/log/dominoes-app-error.log",
+                        "log_group_name": "/aws/ec2/dominoes-app/error",
+                        "log_stream_name": "{instance_id}",
+                        "timezone": "UTC"
+                      },
+                      {
+                        "file_path": "/var/log/user-data.log",
+                        "log_group_name": "/aws/ec2/dominoes-app/userdata",
+                        "log_stream_name": "{instance_id}",
+                        "timezone": "UTC"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+            EOF
+            
+            # Start CloudWatch agent
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+              -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+            
+            # Enable and start the application service
+            systemctl daemon-reload
+            systemctl enable dominoes-app
+            systemctl start dominoes-app
+            
+            # Wait for service to start
+            sleep 10
+            
+            # Verify service is running
+            if systemctl is-active --quiet dominoes-app; then
+                echo "Dominoes app service started successfully"
+                # Test health endpoint
+                if curl -f http://localhost/health; then
+                    echo "Health check passed"
+                    SIGNAL_STATUS=0
+                else
+                    echo "Health check failed"
+                    SIGNAL_STATUS=1
+                fi
+            else
+                echo "Failed to start dominoes app service"
+                systemctl status dominoes-app
+                SIGNAL_STATUS=1
+            fi
+            
+            echo "User data script completed at $(date)"
+            
+            # Signal CloudFormation
+            /opt/aws/bin/cfn-signal -e $SIGNAL_STATUS --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${ProjectName}-${Environment}-instance'
+              - Key: Environment
+                Value: !Ref Environment
+              - Key: Project
+                Value: !Ref ProjectName
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub '${ProjectName}-${Environment}-volume'
+              - Key: Environment
+                Value: !Ref Environment
+
+  # Auto Scaling Group
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub '${ProjectName}-${Environment}-asg'
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1Id
+        - !Ref PrivateSubnet2Id
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: !Ref MinSize
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
+      TargetGroupARNs:
+        - !Ref TargetGroupArn
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      DefaultCooldown: 300
+      TerminationPolicies:
+        - OldestInstance
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-asg-instance'
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+        - Key: Project
+          Value: !Ref ProjectName
+          PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref DesiredCapacity
+        Timeout: PT10M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT5M
+        WaitOnResourceSignals: true
+
+  # Scaling Policies
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: !Ref ScaleUpCooldown
+      ScalingAdjustment: 1
+      PolicyType: SimpleScaling
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      Cooldown: !Ref ScaleDownCooldown
+      ScalingAdjustment: -1
+      PolicyType: SimpleScaling
+
+  # Target Tracking Scaling Policy (more efficient than simple scaling)
+  TargetTrackingScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: !Ref CPUTargetValue
+        ScaleOutCooldown: !Ref ScaleUpCooldown
+        ScaleInCooldown: !Ref ScaleDownCooldown
+
+  # CloudWatch Alarms
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-cpu-high'
+      AlarmDescription: 'CPU utilization is too high'
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-cpu-low'
+      AlarmDescription: 'CPU utilization is too low'
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 30
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      AlarmActions:
+        - !Ref ScaleDownPolicy
+
+  # Instance Status Check Alarm
+  StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-instance-status-check'
+      AlarmDescription: 'Instance status check failed'
+      MetricName: StatusCheckFailed
+      Namespace: AWS/EC2
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroup
+      TreatMissingData: notBreaching
+
+Outputs:
+  LaunchTemplateId:
+    Description: 'Launch Template ID'
+    Value: !Ref LaunchTemplate
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-launch-template-id'
+
+  AutoScalingGroupName:
+    Description: 'Auto Scaling Group Name'
+    Value: !Ref AutoScalingGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-asg-name'
+
+  AutoScalingGroupArn:
+    Description: 'Auto Scaling Group ARN'
+    Value: !Sub 'arn:aws:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${AutoScalingGroup}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-asg-arn'
+
+  EC2RoleArn:
+    Description: 'EC2 IAM Role ARN'
+    Value: !GetAtt EC2Role.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ec2-role-arn'
+
+  ScaleUpPolicyArn:
+    Description: 'Scale Up Policy ARN'
+    Value: !Ref ScaleUpPolicy
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-scale-up-policy-arn'
+
+  ScaleDownPolicyArn:
+    Description: 'Scale Down Policy ARN'
+    Value: !Ref ScaleDownPolicy
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-scale-down-policy-arn'
+
+  # Free Tier Compliance
+  FreeTierCompliance:
+    Description: 'Free Tier compliance information'
+    Value: 'Using t2.micro instances (750 hours/month free), 8GB EBS volumes, limited to 3 max instances for cost control'
+
+  # Scaling Configuration
+  ScalingConfiguration:
+    Description: 'Auto Scaling configuration summary'
+    Value: !Sub 'Min: ${MinSize}, Max: ${MaxSize}, Desired: ${DesiredCapacity}, CPU Target: ${CPUTargetValue}%'

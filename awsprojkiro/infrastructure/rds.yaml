@@ -1,0 +1,389 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Optional RDS MySQL database for scalable dominoes web application - Free Tier optimized'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'dominoes-app'
+    Description: 'Name of the project for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+  VPCId:
+    Type: String
+    Description: 'VPC ID where RDS will be deployed'
+
+  DatabaseSubnetGroupName:
+    Type: String
+    Description: 'Database subnet group name'
+
+  RDSSecurityGroupId:
+    Type: String
+    Description: 'Security Group ID for RDS database'
+
+  DBInstanceClass:
+    Type: String
+    Default: 'db.t3.micro'
+    AllowedValues: ['db.t2.micro', 'db.t3.micro', 'db.t3.small']
+    Description: 'RDS instance class (db.t3.micro for free tier)'
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 20
+    Description: 'Database storage in GB (20GB max for free tier)'
+
+  DBName:
+    Type: String
+    Default: 'dominoesdb'
+    MinLength: 1
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    Description: 'Database name'
+
+  DBUsername:
+    Type: String
+    Default: 'dominoes_user'
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    Description: 'Database master username'
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: '[a-zA-Z0-9]*'
+    Description: 'Database master password (8-41 characters, alphanumeric only)'
+    ConstraintDescription: 'Must be 8-41 characters, alphanumeric only'
+
+  MultiAZ:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable Multi-AZ deployment for high availability'
+
+  BackupRetentionPeriod:
+    Type: Number
+    Default: 7
+    MinValue: 0
+    MaxValue: 35
+    Description: 'Backup retention period in days (7 days free)'
+
+  PreferredBackupWindow:
+    Type: String
+    Default: '03:00-04:00'
+    Description: 'Preferred backup window (UTC)'
+
+  PreferredMaintenanceWindow:
+    Type: String
+    Default: 'sun:04:00-sun:05:00'
+    Description: 'Preferred maintenance window (UTC)'
+
+  EnablePerformanceInsights:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable Performance Insights (additional cost)'
+
+  DeletionProtection:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: 'Enable deletion protection (disable for dev/testing)'
+
+Resources:
+  # RDS Parameter Group
+  DBParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      DBParameterGroupName: !Sub '${ProjectName}-${Environment}-mysql-params'
+      Description: 'Custom parameter group for dominoes application'
+      Family: mysql8.0
+      Parameters:
+        innodb_buffer_pool_size: '{DBInstanceClassMemory*3/4}'
+        max_connections: 100
+        slow_query_log: 1
+        long_query_time: 2
+        log_queries_not_using_indexes: 1
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-mysql-params'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # RDS Option Group
+  DBOptionGroup:
+    Type: AWS::RDS::OptionGroup
+    Properties:
+      OptionGroupName: !Sub '${ProjectName}-${Environment}-mysql-options'
+      OptionGroupDescription: 'Custom option group for dominoes application'
+      EngineName: mysql
+      MajorEngineVersion: '8.0'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-mysql-options'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # RDS Database Instance
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-${Environment}-db'
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: mysql
+      EngineVersion: '8.0.35'
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp2
+      StorageEncrypted: true
+      
+      # Database Configuration
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      
+      # Network Configuration
+      DBSubnetGroupName: !Ref DatabaseSubnetGroupName
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroupId
+      PubliclyAccessible: false
+      
+      # High Availability
+      MultiAZ: !Ref MultiAZ
+      AvailabilityZone: !If [!Equals [!Ref MultiAZ, 'false'], !Select [0, !GetAZs ''], !Ref 'AWS::NoValue']
+      
+      # Backup Configuration
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      PreferredBackupWindow: !Ref PreferredBackupWindow
+      PreferredMaintenanceWindow: !Ref PreferredMaintenanceWindow
+      CopyTagsToSnapshot: true
+      DeleteAutomatedBackups: true
+      
+      # Parameter and Option Groups
+      DBParameterGroupName: !Ref DBParameterGroup
+      OptionGroupName: !Ref DBOptionGroup
+      
+      # Monitoring
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt EnhancedMonitoringRole.Arn
+      EnablePerformanceInsights: !Ref EnablePerformanceInsights
+      PerformanceInsightsRetentionPeriod: !If [!Equals [!Ref EnablePerformanceInsights, 'true'], 7, !Ref 'AWS::NoValue']
+      
+      # Security
+      DeletionProtection: !Ref DeletionProtection
+      
+      # Auto Minor Version Upgrade
+      AutoMinorVersionUpgrade: true
+      
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-db'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Enhanced Monitoring Role
+  EnhancedMonitoringRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-rds-monitoring-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: monitoring.rds.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-rds-monitoring-role'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Read Replica (Optional - commented out for free tier)
+  # DatabaseReadReplica:
+  #   Type: AWS::RDS::DBInstance
+  #   Properties:
+  #     DBInstanceIdentifier: !Sub '${ProjectName}-${Environment}-db-replica'
+  #     SourceDBInstanceIdentifier: !Ref DatabaseInstance
+  #     DBInstanceClass: !Ref DBInstanceClass
+  #     PubliclyAccessible: false
+  #     Tags:
+  #       - Key: Name
+  #         Value: !Sub '${ProjectName}-${Environment}-db-replica'
+  #       - Key: Environment
+  #         Value: !Ref Environment
+
+  # CloudWatch Alarms for RDS
+  DatabaseCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-db-cpu-high'
+      AlarmDescription: 'Database CPU utilization is too high'
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      TreatMissingData: notBreaching
+
+  DatabaseConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-db-connections-high'
+      AlarmDescription: 'Database connection count is too high'
+      MetricName: DatabaseConnections
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      TreatMissingData: notBreaching
+
+  DatabaseFreeStorageSpaceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-db-storage-low'
+      AlarmDescription: 'Database free storage space is low'
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 2000000000  # 2GB in bytes
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      TreatMissingData: notBreaching
+
+  DatabaseReadLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-db-read-latency-high'
+      AlarmDescription: 'Database read latency is too high'
+      MetricName: ReadLatency
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0.2
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      TreatMissingData: notBreaching
+
+  DatabaseWriteLatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-db-write-latency-high'
+      AlarmDescription: 'Database write latency is too high'
+      MetricName: WriteLatency
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 0.2
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref DatabaseInstance
+      TreatMissingData: notBreaching
+
+  # Secrets Manager for Database Credentials (Optional)
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-db-credentials'
+      Description: 'Database credentials for dominoes application'
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DBUsername}"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-db-credentials'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Secret Attachment
+  DatabaseSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DatabaseSecret
+      TargetId: !Ref DatabaseInstance
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  DatabaseEndpoint:
+    Description: 'RDS Database Endpoint'
+    Value: !GetAtt DatabaseInstance.Endpoint.Address
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-db-endpoint'
+
+  DatabasePort:
+    Description: 'RDS Database Port'
+    Value: !GetAtt DatabaseInstance.Endpoint.Port
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-db-port'
+
+  DatabaseName:
+    Description: 'Database Name'
+    Value: !Ref DBName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-db-name'
+
+  DatabaseUsername:
+    Description: 'Database Username'
+    Value: !Ref DBUsername
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-db-username'
+
+  DatabaseSecretArn:
+    Description: 'Database Secret ARN'
+    Value: !Ref DatabaseSecret
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-db-secret-arn'
+
+  DatabaseConnectionString:
+    Description: 'Database Connection String Template'
+    Value: !Sub 'mysql://${DBUsername}:PASSWORD@${DatabaseInstance.Endpoint.Address}:${DatabaseInstance.Endpoint.Port}/${DBName}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-db-connection-string'
+
+  # Free Tier Compliance
+  FreeTierCompliance:
+    Description: 'RDS Free Tier usage information'
+    Value: 'db.t3.micro instance, 20GB storage, 750 hours/month, 20GB backup storage - all within free tier limits'
+
+  # Cost Information
+  EstimatedMonthlyCost:
+    Description: 'Estimated monthly cost (free tier)'
+    Value: '$0 for first 12 months with free tier, then ~$15-20/month for db.t3.micro with Multi-AZ'
+
+  # Configuration Summary
+  DatabaseConfiguration:
+    Description: 'Database configuration summary'
+    Value: !Sub 'MySQL 8.0, ${DBInstanceClass}, ${DBAllocatedStorage}GB, Multi-AZ: ${MultiAZ}, Backup: ${BackupRetentionPeriod} days'

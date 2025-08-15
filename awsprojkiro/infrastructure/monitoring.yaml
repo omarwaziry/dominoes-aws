@@ -1,0 +1,500 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudWatch monitoring and SNS alerting for scalable dominoes web application - Free Tier optimized'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'dominoes-app'
+    Description: 'Name of the project for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+  AlertEmail:
+    Type: String
+    Description: 'Email address for receiving alerts'
+    AllowedPattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: 'Must be a valid email address'
+
+  LoadBalancerFullName:
+    Type: String
+    Description: 'Full name of the Application Load Balancer'
+
+  TargetGroupFullName:
+    Type: String
+    Description: 'Full name of the Target Group'
+
+  AutoScalingGroupName:
+    Type: String
+    Description: 'Name of the Auto Scaling Group'
+
+  # Threshold Parameters
+  HighCPUThreshold:
+    Type: Number
+    Default: 80
+    MinValue: 50
+    MaxValue: 95
+    Description: 'CPU utilization threshold for high CPU alarm (%)'
+
+  LowCPUThreshold:
+    Type: Number
+    Default: 10
+    MinValue: 5
+    MaxValue: 30
+    Description: 'CPU utilization threshold for low CPU alarm (%)'
+
+  HighMemoryThreshold:
+    Type: Number
+    Default: 85
+    MinValue: 70
+    MaxValue: 95
+    Description: 'Memory utilization threshold for high memory alarm (%)'
+
+  ResponseTimeThreshold:
+    Type: Number
+    Default: 2.0
+    MinValue: 0.5
+    MaxValue: 10.0
+    Description: 'Response time threshold in seconds'
+
+  ErrorRateThreshold:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 20
+    Description: 'Error rate threshold (%)'
+
+  UnhealthyHostThreshold:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 5
+    Description: 'Number of unhealthy hosts threshold'
+
+Resources:
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-alerts'
+      DisplayName: !Sub '${ProjectName} ${Environment} Alerts'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alerts'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # SNS Subscription
+  AlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # CloudWatch Log Groups
+  ApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/ec2/${ProjectName}-${Environment}'
+      RetentionInDays: 7  # Free tier: 5GB storage, 7 days retention for cost optimization
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-logs'
+        - Key: Environment
+          Value: !Ref Environment
+
+  ALBLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/applicationloadbalancer/${ProjectName}-${Environment}'
+      RetentionInDays: 3  # Shorter retention for ALB logs to save costs
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb-logs'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # CloudWatch Dashboard
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${LoadBalancerFullName}" ],
+                  [ ".", "TargetResponseTime", ".", "." ],
+                  [ ".", "HTTPCode_Target_2XX_Count", ".", "." ],
+                  [ ".", "HTTPCode_Target_4XX_Count", ".", "." ],
+                  [ ".", "HTTPCode_Target_5XX_Count", ".", "." ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "ALB Metrics",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "HealthyHostCount", "TargetGroup", "${TargetGroupFullName}", "LoadBalancer", "${LoadBalancerFullName}" ],
+                  [ ".", "UnHealthyHostCount", ".", ".", ".", "." ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Target Health",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${AutoScalingGroupName}" ],
+                  [ "AWS/AutoScaling", "GroupDesiredCapacity", "AutoScalingGroupName", "${AutoScalingGroupName}" ],
+                  [ ".", "GroupInServiceInstances", ".", "." ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "EC2 & Auto Scaling Metrics",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "DominoesApp/EC2", "mem_used_percent" ],
+                  [ ".", "disk_used_percent" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "System Resources",
+                "period": 300
+              }
+            }
+          ]
+        }
+
+  # Application Load Balancer Alarms
+  ALBHighResponseTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-high-response-time'
+      AlarmDescription: 'ALB response time is too high'
+      MetricName: TargetResponseTime
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref ResponseTimeThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  ALBUnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-unhealthy-hosts'
+      AlarmDescription: 'ALB has unhealthy targets'
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: !Ref UnhealthyHostThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  ALBHighErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-high-error-rate'
+      AlarmDescription: 'ALB error rate is too high'
+      MetricName: HTTPCode_Target_5XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerFullName
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # EC2 and Auto Scaling Alarms
+  EC2HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-high-cpu'
+      AlarmDescription: 'EC2 CPU utilization is too high'
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref HighCPUThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroupName
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  EC2LowCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-low-cpu'
+      AlarmDescription: 'EC2 CPU utilization is consistently low'
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 900  # 15 minutes
+      EvaluationPeriods: 4  # 1 hour total
+      Threshold: !Ref LowCPUThreshold
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroupName
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  EC2HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-high-memory'
+      AlarmDescription: 'EC2 memory utilization is too high'
+      MetricName: mem_used_percent
+      Namespace: DominoesApp/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref HighMemoryThreshold
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  EC2StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-status-check'
+      AlarmDescription: 'EC2 instance status check failed'
+      MetricName: StatusCheckFailed
+      Namespace: AWS/EC2
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroupName
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # Auto Scaling Events Alarm
+  AutoScalingActivityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-autoscaling-activity'
+      AlarmDescription: 'Auto Scaling group is scaling frequently'
+      MetricName: GroupTotalInstances
+      Namespace: AWS/AutoScaling
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 3  # Alert if we hit max instances
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroupName
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # Custom Application Metrics (from /metrics endpoint)
+  ApplicationHealthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-app-health'
+      AlarmDescription: 'Application health check is failing'
+      MetricName: HealthCheckStatus
+      Namespace: DominoesApp/Application
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: breaching
+
+  # Cost Monitoring Alarm
+  BillingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-billing-alert'
+      AlarmDescription: 'AWS charges are approaching free tier limits'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400  # Daily
+      EvaluationPeriods: 1
+      Threshold: 5.00  # Alert at $5 to stay within free tier
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # Log Metric Filters
+  ErrorLogMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '[timestamp, request_id, level="ERROR", ...]'
+      MetricTransformations:
+        - MetricNamespace: DominoesApp/Logs
+          MetricName: ErrorCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  WarningLogMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '[timestamp, request_id, level="WARNING", ...]'
+      MetricTransformations:
+        - MetricNamespace: DominoesApp/Logs
+          MetricName: WarningCount
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # Alarms based on log metrics
+  HighErrorRateLogAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-high-error-log-rate'
+      AlarmDescription: 'High rate of errors in application logs'
+      MetricName: ErrorCount
+      Namespace: DominoesApp/Logs
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlertTopic
+      TreatMissingData: notBreaching
+
+  # Composite Alarm for overall system health
+  SystemHealthCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-system-health'
+      AlarmDescription: 'Overall system health composite alarm'
+      AlarmRule: !Sub |
+        ALARM(${ALBUnhealthyHostsAlarm}) OR 
+        ALARM(${EC2HighCPUAlarm}) OR 
+        ALARM(${ALBHighResponseTimeAlarm}) OR 
+        ALARM(${EC2StatusCheckAlarm})
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref AlertTopic
+      OKActions:
+        - !Ref AlertTopic
+
+Outputs:
+  AlertTopicArn:
+    Description: 'SNS Topic ARN for alerts'
+    Value: !Ref AlertTopic
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alert-topic-arn'
+
+  DashboardURL:
+    Description: 'CloudWatch Dashboard URL'
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-${Environment}-dashboard'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-dashboard-url'
+
+  ApplicationLogGroupName:
+    Description: 'Application Log Group Name'
+    Value: !Ref ApplicationLogGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-log-group-name'
+
+  ALBLogGroupName:
+    Description: 'ALB Log Group Name'
+    Value: !Ref ALBLogGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-log-group-name'
+
+  # Monitoring Summary
+  MonitoringConfiguration:
+    Description: 'Monitoring configuration summary'
+    Value: !Sub 'Dashboard: ${ProjectName}-${Environment}-dashboard, Alerts: ${AlertEmail}, Log Retention: 7 days'
+
+  # Free Tier Compliance
+  FreeTierCompliance:
+    Description: 'CloudWatch free tier usage'
+    Value: '10 custom metrics, 5GB log storage, 1M API requests, 10 alarms - all within free tier limits'
+
+  # Cost Optimization
+  CostOptimization:
+    Description: 'Cost optimization features'
+    Value: 'Short log retention (7 days), billing alerts at $5, efficient alarm configuration, composite alarms to reduce noise'

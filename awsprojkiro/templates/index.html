@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dominoes Game</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Dominoes Game</h1>
+        
+        <div id="session-score">
+            <h2>Session Score</h2>
+            <div class="score-panel">
+                <div class="score-item">
+                    <span class="score-label">You:</span>
+                    <span id="player-wins" class="score-value">0</span>
+                </div>
+                <div class="score-separator">-</div>
+                <div class="score-item">
+                    <span class="score-label">AI:</span>
+                    <span id="ai-wins" class="score-value">0</span>
+                </div>
+            </div>
+            <button id="reset-score-btn">Reset Score</button>
+        </div>
+
+        <div id="game-info">
+            <div class="info-panel">
+                <div>Player Tiles: <span id="player-count">0</span></div>
+                <div>AI Tiles: <span id="ai-count">0</span></div>
+                <div>Boneyard: <span id="boneyard-count">0</span></div>
+                <div>Turn: <span id="current-turn">-</span></div>
+            </div>
+            <button id="new-game-btn">New Game</button>
+        </div>
+
+        <div id="game-board">
+            <h3>Board</h3>
+            <div id="board-container">
+                <div id="board-tiles"></div>
+            </div>
+        </div>
+
+        <div id="player-hand">
+            <h3>Your Hand</h3>
+            <div id="hand-tiles"></div>
+            <div class="controls">
+                <div id="boneyard-container">
+                    <div id="boneyard-pile">
+                        <div class="boneyard-tile">?</div>
+                        <div class="boneyard-count-display">
+                            <span id="boneyard-display-count">0</span> tiles
+                        </div>
+                    </div>
+                    <div class="boneyard-instruction">Click to draw until you can play</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="messages">
+            <div id="message-log"></div>
+        </div>
+
+        <div id="game-over" class="hidden">
+            <h2 id="game-result"></h2>
+            <div class="game-over-score">
+                <p>Session Score:</p>
+                <div class="final-score">
+                    You: <span id="final-player-score">0</span> - AI: <span id="final-ai-score">0</span>
+                </div>
+            </div>
+            <div class="game-over-buttons">
+                <button id="play-again-btn">Play Again</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='game.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,336 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Application Load Balancer for scalable dominoes web application - Free Tier optimized'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'dominoes-app'
+    Description: 'Name of the project for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+  VPCId:
+    Type: String
+    Description: 'VPC ID where ALB will be deployed'
+    
+  PublicSubnet1Id:
+    Type: String
+    Description: 'Public Subnet 1 ID for ALB'
+    
+  PublicSubnet2Id:
+    Type: String
+    Description: 'Public Subnet 2 ID for ALB'
+    
+  ALBSecurityGroupId:
+    Type: String
+    Description: 'Security Group ID for ALB'
+
+  HealthCheckPath:
+    Type: String
+    Default: '/health'
+    Description: 'Health check path for target group'
+
+  HealthCheckIntervalSeconds:
+    Type: Number
+    Default: 30
+    MinValue: 5
+    MaxValue: 300
+    Description: 'Health check interval in seconds'
+
+  HealthCheckTimeoutSeconds:
+    Type: Number
+    Default: 5
+    MinValue: 2
+    MaxValue: 120
+    Description: 'Health check timeout in seconds'
+
+  HealthyThresholdCount:
+    Type: Number
+    Default: 2
+    MinValue: 2
+    MaxValue: 10
+    Description: 'Number of consecutive successful health checks'
+
+  UnhealthyThresholdCount:
+    Type: Number
+    Default: 3
+    MinValue: 2
+    MaxValue: 10
+    Description: 'Number of consecutive failed health checks'
+
+  TargetGroupPort:
+    Type: Number
+    Default: 80
+    Description: 'Port for target group'
+
+  TargetGroupProtocol:
+    Type: String
+    Default: 'HTTP'
+    AllowedValues: ['HTTP', 'HTTPS']
+    Description: 'Protocol for target group'
+
+Resources:
+  # Application Load Balancer
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-alb'
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      SecurityGroups:
+        - !Ref ALBSecurityGroupId
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+        - Key: routing.http2.enabled
+          Value: 'true'
+        - Key: access_logs.s3.enabled
+          Value: 'false'  # Disabled for cost optimization
+        - Key: deletion_protection.enabled
+          Value: 'false'  # Disabled for easy cleanup during development
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-alb'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # Target Group for EC2 instances
+  EC2TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-ec2-tg'
+      Port: !Ref TargetGroupPort
+      Protocol: !Ref TargetGroupProtocol
+      VpcId: !Ref VPCId
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckProtocol: !Ref TargetGroupProtocol
+      HealthCheckIntervalSeconds: !Ref HealthCheckIntervalSeconds
+      HealthCheckTimeoutSeconds: !Ref HealthCheckTimeoutSeconds
+      HealthyThresholdCount: !Ref HealthyThresholdCount
+      UnhealthyThresholdCount: !Ref UnhealthyThresholdCount
+      HealthCheckGracePeriodSeconds: 300
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '30'  # Faster deregistration for development
+        - Key: stickiness.enabled
+          Value: 'true'
+        - Key: stickiness.type
+          Value: 'lb_cookie'
+        - Key: stickiness.lb_cookie.duration_seconds
+          Value: '86400'  # 24 hours for game session persistence
+        - Key: load_balancing.algorithm.type
+          Value: 'round_robin'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-ec2-tg'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # HTTP Listener
+  HTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Optional HTTPS Listener (commented out for free tier - requires SSL certificate)
+  # HTTPSListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     DefaultActions:
+  #       - Type: forward
+  #         TargetGroupArn: !Ref EC2TargetGroup
+  #     LoadBalancerArn: !Ref ApplicationLoadBalancer
+  #     Port: 443
+  #     Protocol: HTTPS
+  #     Certificates:
+  #       - CertificateArn: !Ref SSLCertificateArn
+
+  # Listener Rules for specific routing
+  HealthCheckRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/health'
+            - '/metrics'
+      ListenerArn: !Ref HTTPListener
+      Priority: 100
+
+  StaticContentRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/static/*'
+      ListenerArn: !Ref HTTPListener
+      Priority: 200
+
+  APIRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref EC2TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - '/api/*'
+      ListenerArn: !Ref HTTPListener
+      Priority: 300
+
+  # CloudWatch Alarms for ALB monitoring
+  ALBTargetResponseTimeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-high-response-time'
+      AlarmDescription: 'ALB target response time is too high'
+      MetricName: TargetResponseTime
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1.0  # 1 second
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+      AlarmActions: []  # SNS topic will be added in monitoring stack
+
+  ALBUnhealthyHostCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-unhealthy-hosts'
+      AlarmDescription: 'ALB has unhealthy targets'
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: TargetGroup
+          Value: !GetAtt EC2TargetGroup.TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+      AlarmActions: []  # SNS topic will be added in monitoring stack
+
+  ALBHTTPCodeTarget5XXAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-5xx-errors'
+      AlarmDescription: 'ALB is receiving 5XX errors from targets'
+      MetricName: HTTPCode_Target_5XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+      AlarmActions: []  # SNS topic will be added in monitoring stack
+
+  ALBRequestCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-alb-high-request-count'
+      AlarmDescription: 'ALB is receiving high request volume'
+      MetricName: RequestCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1000  # Adjust based on expected traffic
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      TreatMissingData: notBreaching
+      AlarmActions: []  # SNS topic will be added in monitoring stack
+
+Outputs:
+  LoadBalancerArn:
+    Description: 'Application Load Balancer ARN'
+    Value: !Ref ApplicationLoadBalancer
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-arn'
+
+  LoadBalancerDNSName:
+    Description: 'Application Load Balancer DNS Name'
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-dns-name'
+
+  LoadBalancerHostedZoneID:
+    Description: 'Application Load Balancer Hosted Zone ID'
+    Value: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-alb-hosted-zone-id'
+
+  TargetGroupArn:
+    Description: 'Target Group ARN'
+    Value: !Ref EC2TargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ec2-target-group-arn'
+
+  TargetGroupFullName:
+    Description: 'Target Group Full Name'
+    Value: !GetAtt EC2TargetGroup.TargetGroupFullName
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-ec2-target-group-full-name'
+
+  HTTPListenerArn:
+    Description: 'HTTP Listener ARN'
+    Value: !Ref HTTPListener
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-http-listener-arn'
+
+  ApplicationURL:
+    Description: 'Application URL'
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-app-url'
+
+  # Free Tier Usage Information
+  FreeTierUsage:
+    Description: 'ALB Free Tier Usage Information'
+    Value: 'ALB provides 750 hours and 15 GB data processing per month in free tier. Monitor usage in AWS Cost Explorer.'
+
+  # Cost Optimization Notes
+  CostOptimizationNotes:
+    Description: 'Cost optimization features enabled'
+    Value: 'Access logs disabled, deletion protection disabled for development, optimized health check intervals, session stickiness enabled for better user experience.'

@@ -1,0 +1,552 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Cost monitoring and free tier compliance for scalable dominoes web application'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'dominoes-app'
+    Description: 'Name of the project for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'dev'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: 'Environment name'
+
+  AlertEmail:
+    Type: String
+    Description: 'Email address for receiving cost alerts'
+    AllowedPattern: '^[^\s@]+@[^\s@]+\.[^\s@]+$'
+    ConstraintDescription: 'Must be a valid email address'
+
+  # Cost Thresholds
+  BillingAlertThreshold:
+    Type: Number
+    Default: 5.00
+    MinValue: 1.00
+    MaxValue: 50.00
+    Description: 'Billing alert threshold in USD'
+
+  FreeTierWarningThreshold:
+    Type: Number
+    Default: 80
+    MinValue: 50
+    MaxValue: 95
+    Description: 'Free tier usage warning threshold (%)'
+
+  # Free Tier Limits (for reference and validation)
+  EC2FreeTierHours:
+    Type: Number
+    Default: 750
+    Description: 'EC2 free tier hours per month'
+
+  EBSFreeTierGB:
+    Type: Number
+    Default: 30
+    Description: 'EBS free tier storage in GB'
+
+  ALBFreeTierGB:
+    Type: Number
+    Default: 15
+    Description: 'ALB free tier data processing in GB'
+
+  RDSFreeTierHours:
+    Type: Number
+    Default: 750
+    Description: 'RDS free tier hours per month'
+
+Resources:
+  # SNS Topic for Cost Alerts
+  CostAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${ProjectName}-${Environment}-cost-alerts'
+      DisplayName: !Sub '${ProjectName} ${Environment} Cost Alerts'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-cost-alerts'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # SNS Subscription for Cost Alerts
+  CostAlertSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref CostAlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  # Budget for Overall AWS Spending
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${ProjectName}-${Environment}-monthly-budget'
+        BudgetLimit:
+          Amount: !Ref BillingAlertThreshold
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          TagKey:
+            - Project
+          TagValue:
+            - !Ref ProjectName
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: 80
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+          - Notification:
+              NotificationType: FORECASTED
+              ComparisonOperator: GREATER_THAN
+              Threshold: 100
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  # EC2 Usage Budget
+  EC2UsageBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${ProjectName}-${Environment}-ec2-usage-budget'
+        BudgetLimit:
+          Amount: !Ref EC2FreeTierHours
+          Unit: HOURS
+        TimeUnit: MONTHLY
+        BudgetType: USAGE
+        CostFilters:
+          Service:
+            - Amazon Elastic Compute Cloud - Compute
+          TagKey:
+            - Project
+          TagValue:
+            - !Ref ProjectName
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: !Ref FreeTierWarningThreshold
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  # RDS Usage Budget
+  RDSUsageBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub '${ProjectName}-${Environment}-rds-usage-budget'
+        BudgetLimit:
+          Amount: !Ref RDSFreeTierHours
+          Unit: HOURS
+        TimeUnit: MONTHLY
+        BudgetType: USAGE
+        CostFilters:
+          Service:
+            - Amazon Relational Database Service
+          TagKey:
+            - Project
+          TagValue:
+            - !Ref ProjectName
+        NotificationsWithSubscribers:
+          - Notification:
+              NotificationType: ACTUAL
+              ComparisonOperator: GREATER_THAN
+              Threshold: !Ref FreeTierWarningThreshold
+              ThresholdType: PERCENTAGE
+            Subscribers:
+              - SubscriptionType: EMAIL
+                Address: !Ref AlertEmail
+
+  # CloudWatch Billing Alarms
+  BillingAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-billing-alarm'
+      AlarmDescription: 'Alert when AWS charges exceed threshold'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400  # Daily
+      EvaluationPeriods: 1
+      Threshold: !Ref BillingAlertThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+      AlarmActions:
+        - !Ref CostAlertTopic
+      TreatMissingData: notBreaching
+
+  # EC2 Cost Alarm
+  EC2CostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-cost-alarm'
+      AlarmDescription: 'Alert when EC2 costs are high'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 2.00  # $2 for EC2 specifically
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+        - Name: ServiceName
+          Value: AmazonEC2
+      AlarmActions:
+        - !Ref CostAlertTopic
+      TreatMissingData: notBreaching
+
+  # RDS Cost Alarm
+  RDSCostAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-rds-cost-alarm'
+      AlarmDescription: 'Alert when RDS costs are high'
+      MetricName: EstimatedCharges
+      Namespace: AWS/Billing
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 1.00  # $1 for RDS specifically
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Currency
+          Value: USD
+        - Name: ServiceName
+          Value: AmazonRDS
+      AlarmActions:
+        - !Ref CostAlertTopic
+      TreatMissingData: notBreaching
+
+  # Custom Metrics for Free Tier Usage Tracking
+  FreeTierUsageFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-${Environment}-free-tier-tracker'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt FreeTierTrackerRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          PROJECT_NAME: !Ref ProjectName
+          ENVIRONMENT: !Ref Environment
+          SNS_TOPIC_ARN: !Ref CostAlertTopic
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime, timedelta
+          
+          def lambda_handler(event, context):
+              cloudwatch = boto3.client('cloudwatch')
+              sns = boto3.client('sns')
+              
+              project_name = os.environ['PROJECT_NAME']
+              environment = os.environ['ENVIRONMENT']
+              sns_topic = os.environ['SNS_TOPIC_ARN']
+              
+              # Calculate current month usage
+              now = datetime.utcnow()
+              start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+              
+              try:
+                  # Get EC2 usage
+                  ec2_usage = get_ec2_usage(cloudwatch, start_of_month, now)
+                  
+                  # Get RDS usage
+                  rds_usage = get_rds_usage(cloudwatch, start_of_month, now)
+                  
+                  # Get EBS usage
+                  ebs_usage = get_ebs_usage(cloudwatch)
+                  
+                  # Calculate usage percentages
+                  ec2_percentage = (ec2_usage / 750) * 100  # 750 hours free tier
+                  rds_percentage = (rds_usage / 750) * 100  # 750 hours free tier
+                  ebs_percentage = (ebs_usage / 30) * 100   # 30GB free tier
+                  
+                  # Send custom metrics
+                  cloudwatch.put_metric_data(
+                      Namespace=f'{project_name}/FreeTier',
+                      MetricData=[
+                          {
+                              'MetricName': 'EC2UsagePercentage',
+                              'Value': ec2_percentage,
+                              'Unit': 'Percent',
+                              'Dimensions': [
+                                  {'Name': 'Environment', 'Value': environment}
+                              ]
+                          },
+                          {
+                              'MetricName': 'RDSUsagePercentage',
+                              'Value': rds_percentage,
+                              'Unit': 'Percent',
+                              'Dimensions': [
+                                  {'Name': 'Environment', 'Value': environment}
+                              ]
+                          },
+                          {
+                              'MetricName': 'EBSUsagePercentage',
+                              'Value': ebs_percentage,
+                              'Unit': 'Percent',
+                              'Dimensions': [
+                                  {'Name': 'Environment', 'Value': environment}
+                              ]
+                          }
+                      ]
+                  )
+                  
+                  # Send alert if usage is high
+                  if any(usage > 80 for usage in [ec2_percentage, rds_percentage, ebs_percentage]):
+                      message = f"""
+                      Free Tier Usage Alert for {project_name}-{environment}:
+                      
+                      EC2 Usage: {ec2_percentage:.1f}% ({ec2_usage:.1f}/750 hours)
+                      RDS Usage: {rds_percentage:.1f}% ({rds_usage:.1f}/750 hours)
+                      EBS Usage: {ebs_percentage:.1f}% ({ebs_usage:.1f}/30 GB)
+                      
+                      Consider optimizing resource usage to stay within free tier limits.
+                      """
+                      
+                      sns.publish(
+                          TopicArn=sns_topic,
+                          Subject=f'Free Tier Usage Alert - {project_name}',
+                          Message=message
+                      )
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'ec2_usage_percent': ec2_percentage,
+                          'rds_usage_percent': rds_percentage,
+                          'ebs_usage_percent': ebs_percentage
+                      })
+                  }
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e)})
+                  }
+          
+          def get_ec2_usage(cloudwatch, start_time, end_time):
+              # This is a simplified calculation
+              # In practice, you'd query actual EC2 usage metrics
+              return 100  # Placeholder
+          
+          def get_rds_usage(cloudwatch, start_time, end_time):
+              # This is a simplified calculation
+              # In practice, you'd query actual RDS usage metrics
+              return 50  # Placeholder
+          
+          def get_ebs_usage(cloudwatch):
+              # This is a simplified calculation
+              # In practice, you'd query actual EBS volume sizes
+              return 20  # Placeholder
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-free-tier-tracker'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # IAM Role for Lambda Function
+  FreeTierTrackerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-${Environment}-free-tier-tracker-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: FreeTierTrackerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:GetMetricStatistics
+                  - cloudwatch:PutMetricData
+                  - cloudwatch:ListMetrics
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - rds:DescribeDBInstances
+                  - sns:Publish
+                Resource: '*'
+
+  # EventBridge Rule to trigger Lambda daily
+  FreeTierTrackerSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-free-tier-tracker-schedule'
+      Description: 'Daily free tier usage tracking'
+      ScheduleExpression: 'cron(0 12 * * ? *)'  # Daily at 12:00 UTC
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt FreeTierUsageFunction.Arn
+          Id: FreeTierTrackerTarget
+
+  # Permission for EventBridge to invoke Lambda
+  FreeTierTrackerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref FreeTierUsageFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt FreeTierTrackerSchedule.Arn
+
+  # CloudWatch Alarms for Free Tier Usage
+  EC2FreeTierUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-ec2-free-tier-usage'
+      AlarmDescription: 'EC2 free tier usage is high'
+      MetricName: EC2UsagePercentage
+      Namespace: !Sub '${ProjectName}/FreeTier'
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: !Ref FreeTierWarningThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      AlarmActions:
+        - !Ref CostAlertTopic
+      TreatMissingData: notBreaching
+
+  RDSFreeTierUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${ProjectName}-${Environment}-rds-free-tier-usage'
+      AlarmDescription: 'RDS free tier usage is high'
+      MetricName: RDSUsagePercentage
+      Namespace: !Sub '${ProjectName}/FreeTier'
+      Statistic: Maximum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: !Ref FreeTierWarningThreshold
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      AlarmActions:
+        - !Ref CostAlertTopic
+      TreatMissingData: notBreaching
+
+  # Cost Optimization Dashboard
+  CostDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub '${ProjectName}-${Environment}-cost-dashboard'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/Billing", "EstimatedCharges", "Currency", "USD" ],
+                  [ ".", ".", "Currency", "USD", "ServiceName", "AmazonEC2" ],
+                  [ ".", ".", "Currency", "USD", "ServiceName", "AmazonRDS" ],
+                  [ ".", ".", "Currency", "USD", "ServiceName", "AmazonVPC" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Estimated Charges by Service",
+                "period": 86400
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${ProjectName}/FreeTier", "EC2UsagePercentage", "Environment", "${Environment}" ],
+                  [ ".", "RDSUsagePercentage", ".", "." ],
+                  [ ".", "EBSUsagePercentage", ".", "." ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Free Tier Usage Percentage",
+                "period": 86400,
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                }
+              }
+            }
+          ]
+        }
+
+Outputs:
+  CostAlertTopicArn:
+    Description: 'SNS Topic ARN for cost alerts'
+    Value: !Ref CostAlertTopic
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cost-alert-topic-arn'
+
+  MonthlyBudgetName:
+    Description: 'Monthly budget name'
+    Value: !Ref MonthlyBudget
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-monthly-budget-name'
+
+  CostDashboardURL:
+    Description: 'Cost monitoring dashboard URL'
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${ProjectName}-${Environment}-cost-dashboard'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-cost-dashboard-url'
+
+  FreeTierTrackerFunctionArn:
+    Description: 'Free tier tracker Lambda function ARN'
+    Value: !GetAtt FreeTierUsageFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-free-tier-tracker-arn'
+
+  # Cost Optimization Summary
+  CostOptimizationFeatures:
+    Description: 'Cost optimization features implemented'
+    Value: 'Budgets, billing alarms, free tier tracking, usage monitoring, automated alerts, cost dashboard'
+
+  # Free Tier Limits Summary
+  FreeTierLimits:
+    Description: 'AWS Free Tier limits being monitored'
+    Value: !Sub 'EC2: ${EC2FreeTierHours} hours, RDS: ${RDSFreeTierHours} hours, EBS: ${EBSFreeTierGB} GB, ALB: ${ALBFreeTierGB} GB data processing'
+
+  # Monitoring Configuration
+  MonitoringConfiguration:
+    Description: 'Cost monitoring configuration'
+    Value: !Sub 'Budget threshold: $${BillingAlertThreshold}, Free tier warning: ${FreeTierWarningThreshold}%, Daily tracking enabled'

@@ -1,0 +1,31 @@
+{
+  "ProjectName": "dominoes-app",
+  "Environment": "staging",
+  "InstanceType": "t2.micro",
+  "MinInstances": 2,
+  "MaxInstances": 3,
+  "DesiredInstances": 2,
+  "EnableRDS": true,
+  "DBInstanceClass": "db.t3.micro",
+  "DBAllocatedStorage": 20,
+  "AlertEmail": "",
+  "HealthCheckPath": "/health",
+  "HealthCheckIntervalSeconds": 30,
+  "HealthyThresholdCount": 2,
+  "UnhealthyThresholdCount": 3,
+  "ScaleUpCooldown": 300,
+  "ScaleDownCooldown": 300,
+  "CPUTargetValue": 70.0,
+  "EnableDetailedMonitoring": true,
+  "LogRetentionDays": 14,
+  "BackupRetentionPeriod": 7,
+  "MultiAZ": true,
+  "DeletionProtection": false,
+  "Tags": {
+    "Project": "dominoes-app",
+    "Environment": "staging",
+    "Owner": "devops-team",
+    "CostCenter": "staging",
+    "Application": "dominoes-game"
+  }
+}

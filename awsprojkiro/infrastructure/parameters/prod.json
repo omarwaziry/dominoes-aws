@@ -1,0 +1,33 @@
+{
+  "ProjectName": "dominoes-app",
+  "Environment": "prod",
+  "InstanceType": "t2.micro",
+  "MinInstances": 2,
+  "MaxInstances": 3,
+  "DesiredInstances": 2,
+  "EnableRDS": true,
+  "DBInstanceClass": "db.t3.micro",
+  "DBAllocatedStorage": 20,
+  "AlertEmail": "",
+  "HealthCheckPath": "/health",
+  "HealthCheckIntervalSeconds": 30,
+  "HealthyThresholdCount": 2,
+  "UnhealthyThresholdCount": 5,
+  "ScaleUpCooldown": 300,
+  "ScaleDownCooldown": 600,
+  "CPUTargetValue": 60.0,
+  "EnableDetailedMonitoring": true,
+  "LogRetentionDays": 30,
+  "BackupRetentionPeriod": 30,
+  "MultiAZ": true,
+  "DeletionProtection": true,
+  "Tags": {
+    "Project": "dominoes-app",
+    "Environment": "prod",
+    "Owner": "platform-team",
+    "CostCenter": "production",
+    "Application": "dominoes-game",
+    "Backup": "required",
+    "Monitoring": "critical"
+  }
+}

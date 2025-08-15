@@ -1,0 +1,1 @@
+# Infrastructure tests using CloudFormation template validation
