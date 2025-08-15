@@ -14,64 +14,6 @@ This project showcases a complete AWS deployment featuring:
 
 ## Architecture
 
-### High-Level Overview
-```mermaid
-graph TB
-    subgraph "Internet"
-        U[Users/Browsers]
-    end
-    
-    subgraph "AWS Cloud - us-east-1"
-        subgraph "Availability Zone 1a"
-            ALB[Application Load Balancer<br/>dominoes-app-alb]
-            EC2_1[EC2 Instance 1<br/>t2.micro<br/>Flask App]
-            RDS_1[RDS Primary<br/>db.t3.micro<br/>MySQL]
-        end
-        
-        subgraph "Availability Zone 1b"
-            EC2_2[EC2 Instance 2<br/>t2.micro<br/>Flask App]
-            RDS_2[RDS Standby<br/>Multi-AZ]
-        end
-        
-        subgraph "Auto Scaling & Monitoring"
-            ASG[Auto Scaling Group<br/>Min: 2, Max: 3, Desired: 2]
-            CW[CloudWatch<br/>Metrics & Alarms]
-            SNS[SNS Topics<br/>Email Alerts]
-        end
-        
-        S3[S3 Bucket<br/>App Deployment]
-    end
-    
-    U -->|HTTPS/HTTP| ALB
-    ALB -->|Load Balance| EC2_1
-    ALB -->|Load Balance| EC2_2
-    EC2_1 -->|Database Queries| RDS_1
-    EC2_2 -->|Database Queries| RDS_1
-    RDS_1 -.->|Replication| RDS_2
-    
-    ASG -->|Manages| EC2_1
-    ASG -->|Manages| EC2_2
-    
-    EC2_1 -->|Metrics| CW
-    EC2_2 -->|Metrics| CW
-    ALB -->|Metrics| CW
-    RDS_1 -->|Metrics| CW
-    
-    CW -->|Triggers| SNS
-    SNS -->|Email Alerts| U
-    
-    S3 -->|App Code| EC2_1
-    S3 -->|App Code| EC2_2
-    
-    style U fill:#e1f5fe
-    style ALB fill:#fff3e0
-    style EC2_1 fill:#f3e5f5
-    style EC2_2 fill:#f3e5f5
-    style RDS_1 fill:#e8f5e8
-    style RDS_2 fill:#e8f5e8
-    style CW fill:#fff8e1
-    style SNS fill:#fce4ec
-```
 
 For detailed architecture diagrams including network topology, security layers, auto scaling, monitoring, and deployment flows, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
@@ -421,5 +363,6 @@ The AI opponent uses strategic gameplay:
 - Prioritizes high-value tiles
 - Blocks opponent moves when possible
 - Manages tile distribution effectively
+
 
 Enjoy your scalable dominoes game on AWS!
