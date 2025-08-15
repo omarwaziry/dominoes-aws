@@ -15,7 +15,7 @@ This project showcases a complete AWS deployment featuring:
 ## Architecture
 
 
-For detailed architecture diagrams including network topology, security layers, auto scaling, monitoring, and deployment flows, see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+For detailed architecture diagrams including network topology, security layers, auto scaling, monitoring, and deployment flows, see **[ARCHITECTURE.md](ARCHITECTURE.png)**.
 
 ### Key Components
 
@@ -366,3 +366,4 @@ The AI opponent uses strategic gameplay:
 
 
 Enjoy your scalable dominoes game on AWS!
+
