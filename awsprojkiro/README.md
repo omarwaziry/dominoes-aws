@@ -15,7 +15,7 @@ This project showcases a complete AWS deployment featuring:
 ## Architecture
 
 
-For detailed architecture diagrams including network topology, security layers, auto scaling, monitoring, and deployment flows, Check my [Archeticture Diagram]([awsprojkiro/Architecture.png](https://github.com/omarwaziry/dominoes-aws/blob/714220f48a326899cce624ebe403b016d4432041/awsprojkiro/Architecture.png))!
+For detailed architecture diagrams including network topology, security layers, auto scaling, monitoring, and deployment flows, Check my [Archeticture Diagram](awsprojkiro/Architecture.png)!
 
 ### Key Components
 
@@ -366,6 +366,7 @@ The AI opponent uses strategic gameplay:
 
 
 Enjoy your scalable dominoes game on AWS!
+
 
 
 
